@@ -1,14 +1,33 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pathlib import Path
 from urllib.parse import urlparse
-import sqlite3, csv, io, os
+import sqlite3, csv, io, os, base64, secrets
 
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("NOVA_DB_PATH", ROOT.parent / "nova_pulse.db"))
 app = FastAPI(title="NOVA PULSE API", version="0.1.0")
+
+@app.middleware("http")
+async def require_admin_password(request, call_next):
+    password = os.getenv("NOVA_ADMIN_PASSWORD", "")
+    if not password:
+        return PlainTextResponse(
+            "NOVA PULSE is locked. Set NOVA_ADMIN_PASSWORD in the hosting environment.",
+            status_code=503,
+        )
+    expected = "Basic " + base64.b64encode(("admin:" + password).encode("utf-8")).decode("ascii")
+    supplied = request.headers.get("authorization", "")
+    if not secrets.compare_digest(supplied, expected):
+        return PlainTextResponse(
+            "Authentication required",
+            status_code=401,
+            headers={"WWW-Authenticate": 'Basic realm="NOVA PULSE"'},
+        )
+    return await call_next(request)
+
 STATUSES = {"new", "reviewed", "drafted", "sent", "waiting", "replied", "interested", "client", "rejected", "do_not_contact"}
 
 
