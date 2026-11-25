@@ -46,6 +46,8 @@ class PostgresConnection:
 
 
 
+app = FastAPI(title="NOVA PULSE API", version="0.1.0")
+
 AVITO_API = "https://api.avito.ru"
 _avito_token = {"value": None, "expires_at": 0}
 
@@ -140,7 +142,7 @@ def avito_send_message(chat_id: str, data: AvitoSendIn):
     )
 
 
-app = FastAPI(title="NOVA PULSE API", version="0.1.0")
+
 
 @app.middleware("http")
 async def require_admin_password(request, call_next):
