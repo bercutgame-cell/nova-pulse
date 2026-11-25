@@ -72,7 +72,32 @@ async function saveAvitoBulkUrls(){
  if(added)box.value='';
  await refresh();
 }
-function buildAvitoSearch(){const key=$('#avitoCategory').value,city=$('#avitoCity').value.trim(),terms=avitoTerms[key]||[];$('#avitoQueries').innerHTML=terms.map((term,i)=>{const q=(city?term+' '+city:term);const url='https://www.avito.ru/rossiya?q='+encodeURIComponent(q);return `<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line)"><span>${esc(q)}</span><a class="btn secondary" style="text-decoration:none;white-space:nowrap" href="${url}" target="_blank" rel="noopener">Открыть ↗</a></div>`}).join('')}
+async function addSearchResult(i){
+ const item=window.avitoSearchResults?.[i];if(!item)return;
+ if(!item.url||!item.url.startsWith('https://www.avito.ru/'))return alert('Сервис не вернул прямую ссылку Avito для этого объявления.');
+ try{
+  const r=await api('/api/leads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:item.title||'Объявление Avito',url:item.url,seller:item.seller||'',city:item.city||'',description:item.description||'',price:item.price||''})});
+  alert(r.duplicate?'Это объявление уже есть в базе.':'Объявление добавлено в NOVA PULSE.');
+  await refresh();
+ }catch(e){alert(e.message)}
+}
+async function buildAvitoSearch(){
+ const key=$('#avitoCategory').value,city=$('#avitoCity').value.trim(),terms=avitoTerms[key]||[];
+ const out=$('#avitoQueries');out.innerHTML='<div class="muted">Ищем реальные объявления…</div>';
+ window.avitoSearchResults=[];
+ let all=[],errors=[];
+ for(const term of terms){
+  const q=city?term+' '+city:term;
+  try{
+   const r=await api('/api/search/avito?q='+encodeURIComponent(q)+'&location=rossiya&page=1');
+   all=all.concat((r.listings||[]).map(x=>({...x,search_query:q})));
+  }catch(e){errors.push(e.message);break}
+ }
+ const seen=new Set();all=all.filter(x=>x.url&&!seen.has(x.url)&&seen.add(x.url));
+ window.avitoSearchResults=all;
+ if(!all.length){out.innerHTML='<div class="empty">'+(errors.length?esc(errors[0]):'По этим запросам объявления не найдены.')+'</div>';return}
+ out.innerHTML='<div class="muted" style="margin-bottom:10px">Найдено карточек: '+all.length+'. Показаны реальные объявления с прямыми ссылками.</div>'+all.map((x,i)=>'<div style="padding:12px 0;border-bottom:1px solid var(--line)"><b>'+esc(x.title)+'</b><div class="muted">'+esc([x.seller,x.city,x.price].filter(Boolean).join(' · '))+'</div><p class="muted" style="margin:6px 0">'+esc((x.description||'').slice(0,260))+'</p><div class="row wrap"><a class="btn secondary" href="'+esc(x.url)+'" target="_blank" rel="noopener" style="text-decoration:none">Открыть объявление ↗</a><button class="btn" onclick="addSearchResult('+i+')">Добавить в базу</button></div></div>').join('');
+}
 function renderAnalytics(a){
 const pct=(n,d)=>d?Math.round(n*1000/d)/10:0;
 const stages=[['В базе',a.total],['Черновик подготовлен',a.drafted],['Перешли к отправке',a.sent_or_later],['Получен ответ',a.replied],['Есть интерес',a.interested],['Стали клиентами',a.clients]];
