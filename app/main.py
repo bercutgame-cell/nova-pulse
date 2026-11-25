@@ -185,6 +185,49 @@ def stats():
         return {"leads": total, "campaigns": campaigns, "replied": counts.get("replied", 0) + counts.get("interested", 0) + counts.get("client", 0), "interested": counts.get("interested", 0) + counts.get("client", 0), "statuses": counts}
 
 
+@app.get("/api/analytics")
+def analytics():
+    with db() as c:
+        totals = c.execute("""
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN status='new' THEN 1 ELSE 0 END) AS new,
+              SUM(CASE WHEN status='drafted' THEN 1 ELSE 0 END) AS drafted,
+              SUM(CASE WHEN status IN ('sent','waiting','replied','interested','client') THEN 1 ELSE 0 END) AS sent_or_later,
+              SUM(CASE WHEN status IN ('replied','interested','client') THEN 1 ELSE 0 END) AS replied,
+              SUM(CASE WHEN status IN ('interested','client') THEN 1 ELSE 0 END) AS interested,
+              SUM(CASE WHEN status='client' THEN 1 ELSE 0 END) AS clients
+            FROM leads
+        """).fetchone()
+        drafts = c.execute("SELECT COUNT(*) AS n FROM message_log").fetchone()["n"]
+        campaign_rows = c.execute("""
+            SELECT c.id, c.name, c.niche, c.region,
+              COUNT(l.id) AS leads,
+              SUM(CASE WHEN l.status='drafted' THEN 1 ELSE 0 END) AS drafted,
+              SUM(CASE WHEN l.status IN ('sent','waiting','replied','interested','client') THEN 1 ELSE 0 END) AS sent_or_later,
+              SUM(CASE WHEN l.status IN ('replied','interested','client') THEN 1 ELSE 0 END) AS replied,
+              SUM(CASE WHEN l.status IN ('interested','client') THEN 1 ELSE 0 END) AS interested,
+              SUM(CASE WHEN l.status='client' THEN 1 ELSE 0 END) AS clients
+            FROM campaigns c
+            LEFT JOIN leads l ON l.campaign_id=c.id
+            GROUP BY c.id, c.name, c.niche, c.region
+            ORDER BY leads DESC, c.id DESC
+        """).fetchall()
+        def number(value):
+            return int(value or 0)
+        total = number(totals["total"])
+        result = {key: number(totals[key]) for key in ("new", "drafted", "sent_or_later", "replied", "interested", "clients")}
+        result["total"] = total
+        result["drafts_created"] = int(drafts or 0)
+        result["reply_rate"] = round(result["replied"] * 100 / result["sent_or_later"], 1) if result["sent_or_later"] else 0
+        result["interest_rate"] = round(result["interested"] * 100 / result["sent_or_later"], 1) if result["sent_or_later"] else 0
+        result["campaigns"] = [
+            {**dict(row), **{key: number(row[key]) for key in ("leads", "drafted", "sent_or_later", "replied", "interested", "clients")}}
+            for row in campaign_rows
+        ]
+        return result
+
+
 @app.get("/api/campaigns")
 def campaigns():
     with db() as c:
