@@ -16,7 +16,6 @@ except ImportError:
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("NOVA_DB_PATH", ROOT.parent / "nova_pulse.db"))
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError,) if psycopg is None else (sqlite3.IntegrityError, psycopg.IntegrityError)
 
 class PostgresConnection:
     def __init__(self):
@@ -266,10 +265,10 @@ async def import_csv(file: UploadFile = File(...), campaign_id: int | None = Non
                 invalid += 1
                 continue
             title = val(row, "title") or url
-            try:
-                c.execute("INSERT INTO leads(campaign_id,title,url,seller,city,description,price,published_at,source) VALUES(?,?,?,?,?,?,?,?,?)", (campaign_id, title, url, val(row, "seller"), val(row, "city"), val(row, "description"), val(row, "price"), val(row, "published_at"), val(row, "source") or "CSV"))
+            cur = c.execute("INSERT INTO leads(campaign_id,title,url,seller,city,description,price,published_at,source) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(url) DO NOTHING RETURNING id", (campaign_id, title, url, val(row, "seller"), val(row, "city"), val(row, "description"), val(row, "price"), val(row, "published_at"), val(row, "source") or "CSV"))
+            if cur.fetchone():
                 inserted += 1
-            except DB_INTEGRITY_ERRORS:
+            else:
                 duplicates += 1
     return {"inserted": inserted, "duplicates": duplicates, "invalid": invalid}
 
@@ -282,15 +281,15 @@ def create_lead(data: LeadIn):
     with db() as c:
         if data.campaign_id is not None and not c.execute("SELECT 1 FROM campaigns WHERE id=?", (data.campaign_id,)).fetchone():
             raise HTTPException(404, "Кампания не найдена")
-        try:
-            cur = c.execute(
-                "INSERT INTO leads(campaign_id,title,url,seller,city,description,price,source) VALUES(?,?,?,?,?,?,?,?) RETURNING id",
-                (data.campaign_id, data.title.strip(), data.url.strip(), data.seller.strip(), data.city.strip(), data.description.strip(), data.price.strip(), "Авито — ручной поиск")
-            )
-        except DB_INTEGRITY_ERRORS:
+        cur = c.execute(
+            "INSERT INTO leads(campaign_id,title,url,seller,city,description,price,source) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(url) DO NOTHING RETURNING id",
+            (data.campaign_id, data.title.strip(), data.url.strip(), data.seller.strip(), data.city.strip(), data.description.strip(), data.price.strip(), "Авито — ручной поиск")
+        )
+        created = cur.fetchone()
+        if not created:
             existing = c.execute("SELECT id FROM leads WHERE url=?", (data.url.strip(),)).fetchone()
             return {"ok": True, "duplicate": True, "id": existing["id"] if existing else None}
-        return {"ok": True, "duplicate": False, "id": cur.fetchone()["id"]}
+        return {"ok": True, "duplicate": False, "id": created["id"]}
 
 
 @app.patch("/api/leads/{lead_id}")
