@@ -89,6 +89,16 @@ class CampaignIn(BaseModel):
     source: str = "CSV / разрешённый источник"
 
 
+class LeadIn(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    url: str = Field(min_length=8, max_length=2000)
+    seller: str = ""
+    city: str = ""
+    description: str = ""
+    price: str = ""
+    campaign_id: int | None = None
+
+
 class LeadUpdate(BaseModel):
     status: str | None = None
     notes: str | None = None
@@ -205,6 +215,25 @@ async def import_csv(file: UploadFile = File(...), campaign_id: int | None = Non
             except sqlite3.IntegrityError:
                 duplicates += 1
     return {"inserted": inserted, "duplicates": duplicates, "invalid": invalid}
+
+
+@app.post("/api/leads")
+def create_lead(data: LeadIn):
+    parsed = urlparse(data.url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(400, "Укажите корректную ссылку на объявление")
+    with db() as c:
+        if data.campaign_id is not None and not c.execute("SELECT 1 FROM campaigns WHERE id=?", (data.campaign_id,)).fetchone():
+            raise HTTPException(404, "Кампания не найдена")
+        try:
+            cur = c.execute(
+                "INSERT INTO leads(campaign_id,title,url,seller,city,description,price,source) VALUES(?,?,?,?,?,?,?,?)",
+                (data.campaign_id, data.title.strip(), data.url.strip(), data.seller.strip(), data.city.strip(), data.description.strip(), data.price.strip(), "Авито — ручной поиск")
+            )
+        except sqlite3.IntegrityError:
+            existing = c.execute("SELECT id FROM leads WHERE url=?", (data.url.strip(),)).fetchone()
+            return {"ok": True, "duplicate": True, "id": existing["id"] if existing else None}
+        return {"ok": True, "duplicate": False, "id": cur.lastrowid}
 
 
 @app.patch("/api/leads/{lead_id}")
