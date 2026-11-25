@@ -6,8 +6,46 @@ from pathlib import Path
 from urllib.parse import urlparse
 import sqlite3, csv, io, os, base64, secrets
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
+
 ROOT = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("NOVA_DB_PATH", ROOT.parent / "nova_pulse.db"))
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+DB_INTEGRITY_ERRORS = (sqlite3.IntegrityError,) if psycopg is None else (sqlite3.IntegrityError, psycopg.IntegrityError)
+
+class PostgresConnection:
+    def __init__(self):
+        if psycopg is None:
+            raise RuntimeError("DATABASE_URL задан, но пакет psycopg не установлен")
+        self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+
+    def execute(self, sql, params=()):
+        return self.conn.execute(sql.replace("?", "%s"), params)
+
+    def executescript(self, script):
+        for statement in script.split(";"):
+            if statement.strip():
+                self.execute(statement)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                self.conn.commit()
+            else:
+                self.conn.rollback()
+        finally:
+            self.conn.close()
+
+
+
 app = FastAPI(title="NOVA PULSE API", version="0.1.0")
 
 @app.middleware("http")
@@ -32,6 +70,8 @@ STATUSES = {"new", "reviewed", "drafted", "sent", "waiting", "replied", "interes
 
 
 def db():
+    if DATABASE_URL:
+        return PostgresConnection()
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys=ON")
@@ -40,22 +80,39 @@ def db():
 
 def init_db():
     with db() as c:
-        c.executescript("""
-        CREATE TABLE IF NOT EXISTS campaigns (
-          id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, niche TEXT DEFAULT '', region TEXT DEFAULT '', source TEXT DEFAULT 'CSV / разрешённый источник', status TEXT DEFAULT 'active', created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS leads (
-          id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
-          title TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, seller TEXT DEFAULT '', city TEXT DEFAULT '', description TEXT DEFAULT '', price TEXT DEFAULT '', published_at TEXT DEFAULT '', source TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'new', notes TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-          UNIQUE(url)
-        );
-        CREATE TABLE IF NOT EXISTS templates (
-          id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, niche TEXT DEFAULT '', body TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        CREATE TABLE IF NOT EXISTS message_log (
-          id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, body TEXT NOT NULL, channel TEXT DEFAULT 'manual', status TEXT DEFAULT 'draft', created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
+        if DATABASE_URL:
+            c.executescript("""
+            CREATE TABLE IF NOT EXISTS campaigns (
+              id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, niche TEXT DEFAULT '', region TEXT DEFAULT '', source TEXT DEFAULT 'CSV / разрешённый источник', status TEXT DEFAULT 'active', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS leads (
+              id BIGSERIAL PRIMARY KEY, campaign_id BIGINT REFERENCES campaigns(id) ON DELETE SET NULL,
+              title TEXT NOT NULL DEFAULT '', url TEXT NOT NULL UNIQUE, seller TEXT DEFAULT '', city TEXT DEFAULT '', description TEXT DEFAULT '', price TEXT DEFAULT '', published_at TEXT DEFAULT '', source TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'new', notes TEXT DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS templates (
+              id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, niche TEXT DEFAULT '', body TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS message_log (
+              id BIGSERIAL PRIMARY KEY, lead_id BIGINT NOT NULL REFERENCES leads(id) ON DELETE CASCADE, body TEXT NOT NULL, channel TEXT DEFAULT 'manual', status TEXT DEFAULT 'draft', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
+        else:
+            c.executescript("""
+            CREATE TABLE IF NOT EXISTS campaigns (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, niche TEXT DEFAULT '', region TEXT DEFAULT '', source TEXT DEFAULT 'CSV / разрешённый источник', status TEXT DEFAULT 'active', created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS leads (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id INTEGER REFERENCES campaigns(id) ON DELETE SET NULL,
+              title TEXT NOT NULL DEFAULT '', url TEXT NOT NULL, seller TEXT DEFAULT '', city TEXT DEFAULT '', description TEXT DEFAULT '', price TEXT DEFAULT '', published_at TEXT DEFAULT '', source TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'new', notes TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+              UNIQUE(url)
+            );
+            CREATE TABLE IF NOT EXISTS templates (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, niche TEXT DEFAULT '', body TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS message_log (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, body TEXT NOT NULL, channel TEXT DEFAULT 'manual', status TEXT DEFAULT 'draft', created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+            """)
         old_names = (
             "01 — Аудит сообщества", "02 — Первое впечатление",
             "03 — Упаковка услуг", "04 — Больше доверия",
@@ -138,8 +195,8 @@ def campaigns():
 @app.post("/api/campaigns")
 def create_campaign(data: CampaignIn):
     with db() as c:
-        cur = c.execute("INSERT INTO campaigns(name,niche,region,source) VALUES(?,?,?,?)", (data.name.strip(), data.niche, data.region, data.source))
-        return dict(c.execute("SELECT * FROM campaigns WHERE id=?", (cur.lastrowid,)).fetchone())
+        cur = c.execute("INSERT INTO campaigns(name,niche,region,source) VALUES(?,?,?,?) RETURNING id", (data.name.strip(), data.niche, data.region, data.source))
+        return dict(c.execute("SELECT * FROM campaigns WHERE id=?", (cur.fetchone()["id"],)).fetchone())
 
 
 @app.delete("/api/campaigns/{campaign_id}")
@@ -212,7 +269,7 @@ async def import_csv(file: UploadFile = File(...), campaign_id: int | None = Non
             try:
                 c.execute("INSERT INTO leads(campaign_id,title,url,seller,city,description,price,published_at,source) VALUES(?,?,?,?,?,?,?,?,?)", (campaign_id, title, url, val(row, "seller"), val(row, "city"), val(row, "description"), val(row, "price"), val(row, "published_at"), val(row, "source") or "CSV"))
                 inserted += 1
-            except sqlite3.IntegrityError:
+            except DB_INTEGRITY_ERRORS:
                 duplicates += 1
     return {"inserted": inserted, "duplicates": duplicates, "invalid": invalid}
 
@@ -227,13 +284,13 @@ def create_lead(data: LeadIn):
             raise HTTPException(404, "Кампания не найдена")
         try:
             cur = c.execute(
-                "INSERT INTO leads(campaign_id,title,url,seller,city,description,price,source) VALUES(?,?,?,?,?,?,?,?)",
+                "INSERT INTO leads(campaign_id,title,url,seller,city,description,price,source) VALUES(?,?,?,?,?,?,?,?) RETURNING id",
                 (data.campaign_id, data.title.strip(), data.url.strip(), data.seller.strip(), data.city.strip(), data.description.strip(), data.price.strip(), "Авито — ручной поиск")
             )
         except sqlite3.IntegrityError:
             existing = c.execute("SELECT id FROM leads WHERE url=?", (data.url.strip(),)).fetchone()
             return {"ok": True, "duplicate": True, "id": existing["id"] if existing else None}
-        return {"ok": True, "duplicate": False, "id": cur.lastrowid}
+        return {"ok": True, "duplicate": False, "id": cur.fetchone()["id"]}
 
 
 @app.patch("/api/leads/{lead_id}")
@@ -292,8 +349,8 @@ def templates():
 @app.post("/api/templates")
 def create_template(data: TemplateIn):
     with db() as c:
-        cur = c.execute("INSERT INTO templates(name,niche,body) VALUES(?,?,?)", (data.name, data.niche, data.body))
-        return dict(c.execute("SELECT * FROM templates WHERE id=?", (cur.lastrowid,)).fetchone())
+        cur = c.execute("INSERT INTO templates(name,niche,body) VALUES(?,?,?) RETURNING id", (data.name, data.niche, data.body))
+        return dict(c.execute("SELECT * FROM templates WHERE id=?", (cur.fetchone()["id"],)).fetchone())
 
 
 @app.post("/api/leads/{lead_id}/draft")
@@ -315,9 +372,9 @@ def create_draft(lead_id: int, data: DraftIn):
         body = tpl["body"]
         for key in ("title", "seller", "city", "description", "price"):
             body = body.replace("{" + key + "}", lead[key] or "")
-        cur = c.execute("INSERT INTO message_log(lead_id,body) VALUES(?,?)", (lead_id, body))
+        cur = c.execute("INSERT INTO message_log(lead_id,body) VALUES(?,?) RETURNING id", (lead_id, body))
         c.execute("UPDATE leads SET status='drafted',updated_at=CURRENT_TIMESTAMP WHERE id=?", (lead_id,))
-        return {"id": cur.lastrowid, "lead_id": lead_id, "body": body, "template_id": tpl["id"], "template_name": tpl["name"], "status": "draft"}
+        return {"id": cur.fetchone()["id"], "lead_id": lead_id, "body": body, "template_id": tpl["id"], "template_name": tpl["name"], "status": "draft"}
 
 
 @app.get("/api/export.csv")
