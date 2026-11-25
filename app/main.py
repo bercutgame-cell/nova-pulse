@@ -56,10 +56,18 @@ def init_db():
           id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE, body TEXT NOT NULL, channel TEXT DEFAULT 'manual', status TEXT DEFAULT 'draft', created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
         """)
-        count = c.execute("SELECT COUNT(*) n FROM templates").fetchone()["n"]
-        if count == 0:
-            c.execute("INSERT INTO templates(name,niche,body) VALUES(?,?,?)", ("Первичное предложение — оформление ВК", "Оформление ВКонтакте", "Здравствуйте! Увидел ваше объявление «{title}». Занимаюсь оформлением сообществ ВКонтакте для бизнеса: помогаю сделать страницу понятной, аккуратной и ориентированной на обращения клиентов. Если актуально, могу показать, что можно улучшить именно у вас."))
-            c.execute("INSERT INTO templates(name,niche,body) VALUES(?,?,?)", ("Первичное предложение — сайт", "Сайты", "Здравствуйте! Увидел ваше объявление «{title}». В NOVA DIGITAL разрабатываем сайты для бизнеса и услуг. Могу предложить несколько идей, как представить ваши услуги и упростить получение заявок. Если интересно, подготовлю короткий вариант именно для вашего бизнеса."))
+        defaults = [
+            ("01 — Аудит сообщества", "Оформление ВКонтакте", "Здравствуйте! Посмотрел ваше объявление «{title}». Я занимаюсь оформлением бизнес-сообществ ВКонтакте в NOVA DIGITAL. Могу бесплатно подсказать несколько точек роста в оформлении вашей страницы, чтобы клиентам было проще разобраться в услугах и обратиться к вам. Интересно?"),
+            ("02 — Первое впечатление", "Оформление ВКонтакте", "Добрый день! Обратил внимание на ваше объявление «{title}». Часто клиент сначала изучает сообщество компании и только потом принимает решение написать. Помогаю оформить такие страницы профессионально: обложка, меню, карточки услуг и единый стиль. Могу показать, как это могло бы выглядеть для вашего бизнеса."),
+            ("03 — Упаковка услуг", "Оформление ВКонтакте", "Здравствуйте! Увидел, что вы предлагаете «{title}». В NOVA DIGITAL помогаем бизнесу навести порядок в оформлении сообщества ВКонтакте: понятно показать услуги, преимущества и способы связи. Могу предложить конкретную структуру и визуальные решения под вашу сферу."),
+            ("04 — Больше доверия", "Оформление ВКонтакте", "Добрый день! Посмотрел информацию о вашей услуге «{title}». Аккуратное и продуманное оформление сообщества помогает сформировать доверие ещё до первого сообщения клиента. Мы делаем фирменное оформление ВКонтакте под конкретный бизнес. Если актуально, подготовлю пару идей для вашей страницы."),
+            ("05 — Комплексное решение", "Оформление ВКонтакте", "Здравствуйте! Увидел ваше объявление «{title}». NOVA DIGITAL занимается цифровым оформлением бизнеса: в первую очередь можем привести в порядок сообщество ВКонтакте, а при необходимости дополнить его посадочной страницей для заявок. Подскажите, рассматриваете ли вы сейчас улучшение онлайн-представления компании?"),
+            ("06 — Короткое предложение", "Оформление ВКонтакте", "Добрый день! Занимаюсь оформлением сообществ ВКонтакте для бизнеса. Увидел ваше объявление «{title}» и подумал, что могу быть полезен с визуальной упаковкой ваших услуг. Могу без обязательств предложить несколько идей именно для вашей страницы. Будет интересно?")
+        ]
+        for name, niche, body in defaults:
+            exists = c.execute("SELECT 1 FROM templates WHERE name=?", (name,)).fetchone()
+            if not exists:
+                c.execute("INSERT INTO templates(name,niche,body) VALUES(?,?,?)", (name, niche, body))
 
 
 @app.on_event("startup")
@@ -87,7 +95,7 @@ class TemplateIn(BaseModel):
 
 
 class DraftIn(BaseModel):
-    template_id: int
+    template_id: int | None = None
 
 
 @app.get("/api/health")
@@ -244,15 +252,24 @@ def create_template(data: TemplateIn):
 def create_draft(lead_id: int, data: DraftIn):
     with db() as c:
         lead = c.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone()
-        tpl = c.execute("SELECT * FROM templates WHERE id=?", (data.template_id,)).fetchone()
-        if not lead or not tpl:
-            raise HTTPException(404, "Лид или шаблон не найден")
+        if not lead:
+            raise HTTPException(404, "Лид не найден")
+        if data.template_id is not None:
+            tpl = c.execute("SELECT * FROM templates WHERE id=?", (data.template_id,)).fetchone()
+        else:
+            pool = c.execute("SELECT * FROM templates ORDER BY id ASC").fetchall()
+            if not pool:
+                raise HTTPException(400, "Сначала добавьте хотя бы один шаблон")
+            draft_count = c.execute("SELECT COUNT(*) n FROM message_log").fetchone()["n"]
+            tpl = pool[draft_count % len(pool)]
+        if not tpl:
+            raise HTTPException(404, "Шаблон не найден")
         body = tpl["body"]
         for key in ("title", "seller", "city", "description", "price"):
             body = body.replace("{" + key + "}", lead[key] or "")
         cur = c.execute("INSERT INTO message_log(lead_id,body) VALUES(?,?)", (lead_id, body))
         c.execute("UPDATE leads SET status='drafted',updated_at=CURRENT_TIMESTAMP WHERE id=?", (lead_id,))
-        return {"id": cur.lastrowid, "lead_id": lead_id, "body": body, "status": "draft"}
+        return {"id": cur.lastrowid, "lead_id": lead_id, "body": body, "template_id": tpl["id"], "template_name": tpl["name"], "status": "draft"}
 
 
 @app.get("/api/export.csv")
