@@ -3,7 +3,7 @@ from fastapi.responses import FileResponse, StreamingResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlencode
 import sqlite3, csv, io, os, base64, secrets, json, time, urllib.request, urllib.error
 
 try:
@@ -94,6 +94,45 @@ def avito_request(path, method="GET", payload=None):
     except Exception as exc:
         raise HTTPException(502, "Ошибка соединения с API Авито: " + str(exc))
 
+
+@app.get("/api/search/avito")
+def search_public_avito(q: str, location: str = "rossiya", page: int = 1):
+    api_key = os.getenv("APISH_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(503, "Не задан APISH_API_KEY в Render Environment. Создайте ключ API.SH и добавьте его в настройки сервиса.")
+    params = urlencode({"q": q[:160], "location": location[:80], "page": min(max(page, 1), 100)})
+    req = urllib.request.Request(
+        "https://api.api.sh/avito/v1/search?" + params,
+        headers={"x-api-key": api_key, "Accept": "application/json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:500]
+        raise HTTPException(502, f"Сервис поиска Avito ({exc.code}): {detail}")
+    except Exception as exc:
+        raise HTTPException(502, "Не удалось выполнить поиск Avito: " + str(exc))
+    items = data.get("listings") or data.get("items") or []
+    results = []
+    for item in items:
+        seller = item.get("seller") or {}
+        results.append({
+            "id": item.get("id") or item.get("avito_id"),
+            "title": item.get("title") or "",
+            "url": item.get("url") or item.get("link") or "",
+            "description": item.get("description") or "",
+            "price": item.get("price_text") or (str(item.get("price")) + " ₽" if item.get("price") is not None else ""),
+            "city": item.get("city") or item.get("location") or "",
+            "seller": seller.get("name") or seller.get("type") or "",
+            "seller_url": seller.get("profile_url") or "",
+            "published": item.get("published") or "",
+            "image": (item.get("images") or [None])[0],
+        })
+    return {"total": data.get("total", len(results)), "page": data.get("page", page),
+            "next_page": data.get("next_page"), "credits_used": data.get("credits_used"),
+            "listings": results}
 
 @app.get("/api/avito/status")
 def avito_status():
