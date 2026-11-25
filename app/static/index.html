@@ -161,4 +161,31 @@ async function sendAvitoReply(){
 }
 
 refresh().catch(e=>alert('Не удалось загрузить приложение: '+e.message));
-</script></body></html>
+</script>
+<script>
+(function(){
+  function activateNovaTab(name){
+    document.querySelectorAll('.section').forEach(function(section){
+      section.classList.toggle('active', section.id === name);
+    });
+    document.querySelectorAll('.nav button[data-tab]').forEach(function(button){
+      button.classList.toggle('active', button.getAttribute('data-tab') === name);
+    });
+    var titles={overview:'Обзор системы',avito:'Поиск объявлений Авито',avitoMessages:'Авито: сообщения',campaigns:'Поисковые кампании',leads:'База потенциальных клиентов',templates:'Шаблоны сообщений'};
+    var heading=document.getElementById('pageTitle');
+    if(heading) heading.textContent=titles[name] || 'NOVA PULSE';
+    try{
+      if(name==='leads' && typeof renderLeads==='function') renderLeads();
+      if(name==='avito' && typeof fillAvitoCampaigns==='function') fillAvitoCampaigns();
+      if(name==='avitoMessages' && typeof checkAvitoStatus==='function') checkAvitoStatus();
+    }catch(e){console.error('NOVA tab render:',e);}
+  }
+  document.addEventListener('click',function(event){
+    var button=event.target.closest('.nav button[data-tab]');
+    if(!button)return;
+    event.preventDefault();
+    activateNovaTab(button.getAttribute('data-tab'));
+  },true);
+})();
+</script>
+</body></html>
