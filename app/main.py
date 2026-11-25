@@ -262,6 +262,18 @@ def update_lead(lead_id: int, data: LeadUpdate):
         return dict(c.execute("SELECT * FROM leads WHERE id=?", (lead_id,)).fetchone())
 
 
+class BulkDeleteIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=500)
+
+
+@app.post("/api/leads/bulk-delete")
+def bulk_delete_leads(data: BulkDeleteIn):
+    ids = list(dict.fromkeys(data.ids))
+    with db() as c:
+        cur = c.execute("DELETE FROM leads WHERE id IN (" + ",".join("?" for _ in ids) + ")", ids)
+        return {"ok": True, "deleted": cur.rowcount}
+
+
 @app.delete("/api/leads/{lead_id}")
 def delete_lead(lead_id: int):
     with db() as c:
