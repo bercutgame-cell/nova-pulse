@@ -250,6 +250,34 @@ def delete_campaign(campaign_id: int):
         return {"ok": True}
 
 
+def score_lead(lead):
+    title = (lead.get('title') or '').lower()
+    description = (lead.get('description') or '').lower()
+    seller = (lead.get('seller') or '').lower()
+    text = title + ' ' + description
+    score = 20
+    reasons = []
+    groups = [(('заявк', 'заказ', 'обращен', 'запис', 'бронир', 'консультац'), 18, 'Есть поток заявок или записей'), (('расписан', 'график', 'диспетчер', 'оператор', 'менеджер', 'администратор'), 14, 'Возможна автоматизация распределения задач'), (('доставк', 'выезд', 'замер', 'курьер', 'маршрут', 'логист', 'монтаж', 'ремонт'), 12, 'Есть координируемые процессы'), (('команда', 'сотрудник', 'бригада', 'филиал', 'сеть', 'центр', 'компания'), 12, 'Есть признаки команды или нескольких направлений'), (('таблиц', 'excel', 'эксель', 'crm', 'мессенджер', 'telegram', 'телеграм', 'интеграц', 'учет', 'учёт'), 16, 'Упомянуты инструменты или передача данных'), (('ежедневно', 'регулярно', 'постоянно', 'каждый день', 'повторн', 'обслуживан'), 10, 'Есть повторяющиеся операции')]
+    for words, points, reason in groups:
+        if any(word in text for word in words):
+            score += points
+            reasons.append(reason)
+    if any(word in seller for word in ('ооо', 'ип ', 'компания', 'сервис', 'центр', 'студия')):
+        score += 8
+        reasons.append('Похоже на оформленный бизнес-профиль')
+    if len(description.strip()) >= 180:
+        score += 5
+        reasons.append('В объявлении достаточно информации для персонального обращения')
+    elif len(description.strip()) >= 70:
+        score += 3
+        reasons.append('Есть описание услуги')
+    if seller.strip(): score += 3
+    if (lead.get('city') or '').strip(): score += 2
+    score = min(score, 100)
+    level = 'high' if score >= 65 else ('medium' if score >= 42 else 'low')
+    if not reasons: reasons.append('Недостаточно признаков — нужна ручная проверка')
+    return {'priority_score': score, 'priority_level': level, 'priority_reasons': reasons}
+
 @app.get("/api/leads")
 def leads(q: str = "", status: str = "", campaign_id: int | None = None, limit: int = 1000, offset: int = 0):
     sql = "SELECT l.*,c.name campaign_name FROM leads l LEFT JOIN campaigns c ON c.id=l.campaign_id WHERE 1=1"
@@ -266,7 +294,10 @@ def leads(q: str = "", status: str = "", campaign_id: int | None = None, limit: 
     sql += " ORDER BY l.id DESC LIMIT ? OFFSET ?"
     args += [min(max(limit, 1), 5000), max(offset, 0)]
     with db() as c:
-        return [dict(r) for r in c.execute(sql, args)]
+        rows = [dict(r) for r in c.execute(sql, args)]
+    for row in rows:
+        row.update(score_lead(row))
+    return rows
 
 
 @app.post("/api/import")
