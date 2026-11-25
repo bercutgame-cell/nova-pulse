@@ -287,7 +287,7 @@ def create_lead(data: LeadIn):
                 "INSERT INTO leads(campaign_id,title,url,seller,city,description,price,source) VALUES(?,?,?,?,?,?,?,?) RETURNING id",
                 (data.campaign_id, data.title.strip(), data.url.strip(), data.seller.strip(), data.city.strip(), data.description.strip(), data.price.strip(), "Авито — ручной поиск")
             )
-        except sqlite3.IntegrityError:
+        except DB_INTEGRITY_ERRORS:
             existing = c.execute("SELECT id FROM leads WHERE url=?", (data.url.strip(),)).fetchone()
             return {"ok": True, "duplicate": True, "id": existing["id"] if existing else None}
         return {"ok": True, "duplicate": False, "id": cur.fetchone()["id"]}
