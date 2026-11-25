@@ -274,8 +274,14 @@ def score_lead(lead):
     if seller.strip(): score += 3
     if (lead.get('city') or '').strip(): score += 2
     score = min(score, 100)
-    level = 'high' if score >= 65 else ('medium' if score >= 42 else 'low')
-    if not reasons: reasons.append('Недостаточно признаков — нужна ручная проверка')
+    closed = lead.get('status') in ('rejected', 'do_not_contact', 'client')
+    if closed:
+        score = 0
+        reasons = ['Контакт закрыт или отмечен «не писать» — не включать в новые обращения']
+        level = 'excluded'
+    else:
+        level = 'high' if score >= 65 else ('medium' if score >= 42 else 'low')
+        if not reasons: reasons.append('Недостаточно признаков — нужна ручная проверка')
     return {'priority_score': score, 'priority_level': level, 'priority_reasons': reasons}
 
 @app.get("/api/leads")
