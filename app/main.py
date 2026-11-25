@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pathlib import Path
 from urllib.parse import urlparse
-import sqlite3, csv, io, os, base64, secrets
+import sqlite3, csv, io, os, base64, secrets, json, time, urllib.request, urllib.error
 
 try:
     import psycopg
@@ -43,6 +43,101 @@ class PostgresConnection:
         finally:
             self.conn.close()
 
+
+
+
+AVITO_API = "https://api.avito.ru"
+_avito_token = {"value": None, "expires_at": 0}
+
+def avito_request(path, method="GET", payload=None):
+    client_id = os.getenv("AVITO_CLIENT_ID", "").strip()
+    client_secret = os.getenv("AVITO_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        raise HTTPException(503, "Не заданы AVITO_CLIENT_ID и AVITO_CLIENT_SECRET в Render Environment")
+    if not _avito_token["value"] or _avito_token["expires_at"] <= time.time() + 60:
+        credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+        token_req = urllib.request.Request(
+            AVITO_API + "/token",
+            data=b"grant_type=client_credentials",
+            headers={"Authorization": "Basic " + credentials, "Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(token_req, timeout=20) as response:
+                token_data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:500]
+            raise HTTPException(502, "Авито OAuth: " + detail)
+        except Exception as exc:
+            raise HTTPException(502, "Не удалось получить токен Авито: " + str(exc))
+        _avito_token["value"] = token_data.get("access_token")
+        _avito_token["expires_at"] = time.time() + int(token_data.get("expires_in", 3600))
+        if not _avito_token["value"]:
+            raise HTTPException(502, "Авито не вернул access_token")
+    headers = {"Authorization": "Bearer " + _avito_token["value"], "Accept": "application/json"}
+    data = None
+    if payload is not None:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(AVITO_API + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=25) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {"ok": True}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:700]
+        if exc.code == 401:
+            _avito_token.update({"value": None, "expires_at": 0})
+        raise HTTPException(502, f"Ошибка API Авито ({exc.code}): {detail}")
+    except Exception as exc:
+        raise HTTPException(502, "Ошибка соединения с API Авито: " + str(exc))
+
+
+@app.get("/api/avito/status")
+def avito_status():
+    if not os.getenv("AVITO_CLIENT_ID") or not os.getenv("AVITO_CLIENT_SECRET"):
+        return {"configured": False, "connected": False, "message": "Добавьте AVITO_CLIENT_ID и AVITO_CLIENT_SECRET в Render"}
+    profile = avito_request("/core/v1/accounts/self")
+    return {"configured": True, "connected": True, "user_id": profile.get("id"), "name": profile.get("name") or profile.get("name_user") or "Аккаунт Авито"}
+
+
+@app.get("/api/avito/chats")
+def avito_chats(limit: int = 50, offset: int = 0, unread_only: bool = False):
+    status = avito_status()
+    if not status.get("connected"):
+        raise HTTPException(503, status.get("message", "Авито не подключено"))
+    user_id = status.get("user_id")
+    if not user_id:
+        raise HTTPException(502, "Авито не вернул идентификатор аккаунта")
+    query = f"?limit={min(max(limit, 1), 100)}&offset={max(offset, 0)}&unread_only={'true' if unread_only else 'false'}"
+    result = avito_request(f"/messenger/v2/accounts/{user_id}/chats{query}")
+    return {"user_id": user_id, "chats": result.get("chats", []), "total": result.get("total", 0)}
+
+
+@app.get("/api/avito/chats/{chat_id}/messages")
+def avito_chat_messages(chat_id: str, limit: int = 50, offset: int = 0):
+    status = avito_status()
+    user_id = status.get("user_id")
+    if not user_id:
+        raise HTTPException(503, "Не удалось определить аккаунт Авито")
+    return avito_request(f"/messenger/v3/accounts/{user_id}/chats/{chat_id}/messages/?limit={min(max(limit, 1), 100)}&offset={max(offset, 0)}")
+
+
+class AvitoSendIn(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+
+
+@app.post("/api/avito/chats/{chat_id}/send")
+def avito_send_message(chat_id: str, data: AvitoSendIn):
+    status = avito_status()
+    user_id = status.get("user_id")
+    if not user_id:
+        raise HTTPException(503, "Не удалось определить аккаунт Авито")
+    return avito_request(
+        f"/messenger/v1/accounts/{user_id}/chats/{chat_id}/messages",
+        method="POST",
+        payload={"type": "text", "message": {"text": data.text.strip()}},
+    )
 
 
 app = FastAPI(title="NOVA PULSE API", version="0.1.0")
