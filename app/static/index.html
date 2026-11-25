@@ -29,6 +29,7 @@
 <select id="avitoCampaign" name="campaign_id" class="field"><option value="">Без кампании</option></select>
 <button class="btn" style="margin-top:10px">Сохранить лид</button><p class="muted" id="quickLeadResult"></p>
 </form></div></div>
+<div class="panel" style="margin-top:16px"><h2>Добавить прямые ссылки на объявления</h2><p class="muted">Откройте выдачу Авито, скопируйте ссылки именно на карточки подходящих объявлений и вставьте сюда — по одной ссылке на строку. Общие ссылки на поиск не сохраняются.</p><textarea id="avitoBulkUrls" class="field" placeholder="https://www.avito.ru/...\nhttps://www.avito.ru/..." style="min-height:120px"></textarea><button class="btn" style="margin-top:9px" onclick="saveAvitoBulkUrls()">Добавить ссылки в базу</button><p id="avitoBulkResult" class="muted"></p></div>
 <div class="panel"><h2>Как работаем</h2><div class="muted">1. Открываете поисковый запрос на Авито.<br>2. Проверяете компанию и объявление вручную.<br>3. Добавляете подходящее объявление в форму справа.<br>4. NOVA PULSE убирает дубли по ссылке, сохраняет лид и позволяет подготовить черновик одного из шести предложений по автоматизации бизнеса.</div></div>
 </section>
 <section id="avitoMessages" class="section">
@@ -54,6 +55,23 @@ document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>tab(b.dataset.
 async function refresh(){[campaigns,templates,leads]=await Promise.all([api('/api/campaigns'),api('/api/templates'),api('/api/leads?limit=1000')]);const [s,analytics]=await Promise.all([api('/api/stats'),api('/api/analytics')]);renderAnalytics(analytics);$('#mLeads').textContent=s.leads;$('#mCampaigns').textContent=s.campaigns;$('#mReplied').textContent=s.replied;$('#mInterested').textContent=s.interested;renderCampaigns();renderTemplates();renderRecent();fillSelects();renderLeads()}
 function fillSelects(){const opts=campaigns.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');$('#avitoCampaign').innerHTML='<option value="">Без кампании</option>'+opts;$('#importCampaign').innerHTML='<option value="">Без кампании</option>'+opts;$('#filterCampaign').innerHTML='<option value="">Все кампании</option>'+opts;$('#filterStatus').innerHTML='<option value="">Все статусы</option>'+Object.entries(statuses).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}
 function fillAvitoCampaigns(){$('#avitoCampaign').innerHTML='<option value="">Без кампании</option>'+campaigns.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}
+async function saveAvitoBulkUrls(){
+ const box=$('#avitoBulkUrls'),out=$('#avitoBulkResult');
+ const urls=[...new Set(box.value.split(/\\r?\\n/).map(x=>x.trim()).filter(Boolean))];
+ if(!urls.length){out.textContent='Вставьте хотя бы одну прямую ссылку на объявление.';return}
+ let added=0,duplicates=0,invalid=0;
+ out.textContent='Сохраняем ссылки…';
+ for(const url of urls){
+  if(!/^https?:\\/\\/(www\\.)?avito\\.ru\\//i.test(url)){invalid++;continue}
+  try{
+   const r=await api('/api/leads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:'Объявление Avito — требуется заполнить',url,source:'Avito — ссылка добавлена вручную'})});
+   if(r.duplicate)duplicates++;else added++;
+  }catch(e){invalid++}
+ }
+ out.textContent='Добавлено: '+added+' · Уже были в базе: '+duplicates+' · Не принято: '+invalid;
+ if(added)box.value='';
+ await refresh();
+}
 function buildAvitoSearch(){const key=$('#avitoCategory').value,city=$('#avitoCity').value.trim(),terms=avitoTerms[key]||[];$('#avitoQueries').innerHTML=terms.map((term,i)=>{const q=(city?term+' '+city:term);const url='https://www.avito.ru/rossiya?q='+encodeURIComponent(q);return `<div style="display:flex;gap:8px;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line)"><span>${esc(q)}</span><a class="btn secondary" style="text-decoration:none;white-space:nowrap" href="${url}" target="_blank" rel="noopener">Открыть ↗</a></div>`}).join('')}
 function renderAnalytics(a){
 const pct=(n,d)=>d?Math.round(n*1000/d)/10:0;
