@@ -10,14 +10,14 @@
 <div class="notice">MVP работает с импортом CSV и разрешёнными источниками. Сбор данных с Авито и отправка сообщений не имитируются: используйте только официально доступные способы и проверяйте обращения вручную.</div>
 <section id="overview" class="section active"><div class="cards"><div class="card"><small>Всего лидов</small><div class="metric gold" id="mLeads">0</div></div><div class="card"><small>Кампаний</small><div class="metric" id="mCampaigns">0</div></div><div class="card"><small>Ответили</small><div class="metric" id="mReplied">0</div></div><div class="card"><small>Заинтересованы</small><div class="metric" id="mInterested">0</div></div></div><div class="panel" id="analyticsPanel" style="margin-bottom:18px"><h2>Эффективность кампаний</h2><div id="analyticsContent" class="muted">Загрузка аналитики…</div></div><div class="grid"><div class="panel"><h2>Последние лиды</h2><div id="recent"></div></div><div class="panel"><h2>Быстрый импорт базы</h2><p class="muted">Загрузите CSV с заголовками title, url, seller, city, description, price, published_at, source.</p><div class="row wrap"><select id="importCampaign" class="field"><option value="">Без кампании</option></select><label class="btn filelabel">Выбрать CSV<input id="csvFile" type="file" accept=".csv,text/csv" hidden></label></div><p id="importResult" class="muted"></p><button class="btn secondary" onclick="downloadCsv()">Экспорт всей базы</button></div></div></section>
 <section id="avito" class="section">
-<div class="notice">География: вся Россия. Это рабочее место для ручного поиска: кнопки открывают поисковые страницы Авито, а NOVA PULSE помогает сохранить найденные объявления и подготовить персональное обращение. Автоматический сбор страниц и автоматическая рассылка не выполняются.</div>
+<div class="notice">NOVA PULSE ищет публичные объявления Авито через API.SH и показывает карточки с прямыми ссылками. Сохраняйте отдельные объявления или добавляйте все найденные карточки в базу. Автоматическая отправка сообщений не выполняется.</div>
 <div class="grid">
 <div class="panel"><h2>Параметры поиска</h2>
 <label class="muted">Направление</label><select id="avitoCategory" class="field" style="margin:7px 0 12px">
 <option value="auto">Автосервисы и автодетейлинг</option><option value="repair">Ремонт и строительство</option><option value="clean">Клининговые компании</option><option value="logistics">Грузоперевозки и логистика</option><option value="beauty">Красота и здоровье</option><option value="education">Обучение и образовательные услуги</option>
 </select>
 <label class="muted">Уточнение по городу (необязательно)</label><input id="avitoCity" class="field" placeholder="Например, Казань — пусто означает вся Россия" style="margin:7px 0 12px">
-<button class="btn" onclick="buildAvitoSearch()">Сформировать поисковые запросы</button>
+<button class="btn" id="avitoSearchBtn" onclick="buildAvitoSearch()">Найти объявления</button>
 <div id="avitoQueries" style="margin-top:15px"></div></div>
 <div class="panel"><h2>Добавить найденное объявление</h2>
 <form id="quickLeadForm">
@@ -29,8 +29,8 @@
 <select id="avitoCampaign" name="campaign_id" class="field"><option value="">Без кампании</option></select>
 <button class="btn" style="margin-top:10px">Сохранить лид</button><p class="muted" id="quickLeadResult"></p>
 </form></div></div>
-<div class="panel" style="margin-top:16px"><h2>Добавить прямые ссылки на объявления</h2><p class="muted">Откройте выдачу Авито, скопируйте ссылки именно на карточки подходящих объявлений и вставьте сюда — по одной ссылке на строку. Общие ссылки на поиск не сохраняются.</p><textarea id="avitoBulkUrls" class="field" placeholder="https://www.avito.ru/...\nhttps://www.avito.ru/..." style="min-height:120px"></textarea><button class="btn" style="margin-top:9px" onclick="saveAvitoBulkUrls()">Добавить ссылки в базу</button><p id="avitoBulkResult" class="muted"></p></div>
-<div class="panel"><h2>Как работаем</h2><div class="muted">1. Открываете поисковый запрос на Авито.<br>2. Проверяете компанию и объявление вручную.<br>3. Добавляете подходящее объявление в форму справа.<br>4. NOVA PULSE убирает дубли по ссылке, сохраняет лид и позволяет подготовить черновик одного из шести предложений по автоматизации бизнеса.</div></div>
+<div class="panel" style="margin-top:16px"><div class="row wrap"><h2 style="margin:0">Результаты поиска</h2><button class="btn right" id="saveAllAvitoBtn" onclick="saveAllSearchResults()" disabled>Добавить все найденные в базу</button></div><div id="avitoResultsMeta" class="muted" style="margin:10px 0">Здесь появятся найденные карточки объявлений.</div><div id="avitoQueries"></div></div>
+<div class="panel"><h2>Как работаем</h2><div class="muted">1. Выбираете направление и при необходимости город.<br>2. NOVA PULSE получает публичные карточки объявлений Авито.<br>3. Сохраняете отдельные подходящие объявления или все результаты одним действием.<br>4. Система убирает дубли по ссылке, сохраняет лиды и помогает подготовить персональные черновики предложений по автоматизации бизнеса.</div></div>
 </section>
 <section id="avitoMessages" class="section">
 <div class="notice">Официальное подключение через Avito Messenger API. Здесь отображаются доступные диалоги аккаунта. Сообщения отправляются только в выбранный существующий чат и только после нажатия кнопки отправки.</div>
@@ -74,29 +74,31 @@ async function saveAvitoBulkUrls(){
 }
 async function addSearchResult(i){
  const item=window.avitoSearchResults?.[i];if(!item)return;
- if(!item.url||!item.url.startsWith('https://www.avito.ru/'))return alert('Сервис не вернул прямую ссылку Avito для этого объявления.');
- try{
-  const r=await api('/api/leads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:item.title||'Объявление Avito',url:item.url,seller:item.seller||'',city:item.city||'',description:item.description||'',price:item.price||''})});
-  alert(r.duplicate?'Это объявление уже есть в базе.':'Объявление добавлено в NOVA PULSE.');
-  await refresh();
- }catch(e){alert(e.message)}
+ if(!item.url||!item.url.startsWith('https://www.avito.ru/'))return alert('В карточке нет прямой ссылки Avito.');
+ try{const r=await api('/api/leads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:item.title||'Объявление Avito',url:item.url,seller:item.seller||'',city:item.city||'',description:item.description||'',price:item.price||''})});alert(r.duplicate?'Объявление уже есть в базе.':'Объявление добавлено в NOVA PULSE.');await refresh()}catch(e){alert(e.message)}
+}
+async function saveAllSearchResults(){
+ const items=window.avitoSearchResults||[];if(!items.length)return;
+ const btn=$('#saveAllAvitoBtn');btn.disabled=true;btn.textContent='Сохраняем…';
+ let added=0,duplicates=0,failed=0;
+ for(const item of items){if(!item.url||!item.url.startsWith('https://www.avito.ru/')){failed++;continue}try{const r=await api('/api/leads',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:item.title||'Объявление Avito',url:item.url,seller:item.seller||'',city:item.city||'',description:item.description||'',price:item.price||''})});if(r.duplicate)duplicates++;else added++}catch(e){failed++}}
+ btn.textContent='Добавить все найденные в базу';btn.disabled=false;
+ $('#avitoResultsMeta').textContent='Готово: добавлено '+added+', уже были в базе '+duplicates+', ошибок '+failed+'.';await refresh();
 }
 async function buildAvitoSearch(){
- const key=$('#avitoCategory').value,city=$('#avitoCity').value.trim(),terms=avitoTerms[key]||[];
- const out=$('#avitoQueries');out.innerHTML='<div class="muted">Ищем реальные объявления…</div>';
- window.avitoSearchResults=[];
- let all=[],errors=[];
- for(const term of terms){
-  const q=city?term+' '+city:term;
-  try{
-   const r=await api('/api/search/avito?q='+encodeURIComponent(q)+'&location=rossiya&page=1');
-   all=all.concat((r.listings||[]).map(x=>({...x,search_query:q})));
-  }catch(e){errors.push(e.message);break}
- }
- const seen=new Set();all=all.filter(x=>x.url&&!seen.has(x.url)&&seen.add(x.url));
- window.avitoSearchResults=all;
- if(!all.length){out.innerHTML='<div class="empty">'+(errors.length?esc(errors[0]):'По этим запросам объявления не найдены.')+'</div>';return}
- out.innerHTML='<div class="muted" style="margin-bottom:10px">Найдено карточек: '+all.length+'. Показаны реальные объявления с прямыми ссылками.</div>'+all.map((x,i)=>'<div style="padding:12px 0;border-bottom:1px solid var(--line)"><b>'+esc(x.title)+'</b><div class="muted">'+esc([x.seller,x.city,x.price].filter(Boolean).join(' · '))+'</div><p class="muted" style="margin:6px 0">'+esc((x.description||'').slice(0,260))+'</p><div class="row wrap"><a class="btn secondary" href="'+esc(x.url)+'" target="_blank" rel="noopener" style="text-decoration:none">Открыть объявление ↗</a><button class="btn" onclick="addSearchResult('+i+')">Добавить в базу</button></div></div>').join('');
+ const key=$('#avitoCategory').value,city=$('#avitoCity').value.trim(),terms=(avitoTerms[key]||[]).slice(0,5);
+ const out=$('#avitoQueries'),meta=$('#avitoResultsMeta'),btn=$('#avitoSearchBtn');
+ out.innerHTML='<div class="muted">Выполняем поиск по выбранному направлению…</div>';
+ meta.textContent='Поиск выполняется. API.SH списывает 5 кредитов за успешный запрос.';
+ $('#saveAllAvitoBtn').disabled=true;btn.disabled=true;btn.textContent='Ищем…';window.avitoSearchResults=[];
+ let all=[],errors=[],credits=0,total=0;
+ for(const term of terms){const q=city?term+' '+city:term;try{const r=await api('/api/search/avito?q='+encodeURIComponent(q)+'&location='+encodeURIComponent(city||'rossiya')+'&category=uslugi&page=1');credits+=Number(r.credits_used||0);total+=Number(r.total||0);all=all.concat((r.listings||[]).map(x=>({...x,search_query:q})))}catch(e){errors.push(q+': '+e.message)}}
+ const seen=new Set();all=all.filter(x=>x.url&&!seen.has(x.url)&&seen.add(x.url));window.avitoSearchResults=all;
+ btn.disabled=false;btn.textContent='Найти объявления';$('#saveAllAvitoBtn').disabled=!all.length;
+ meta.textContent='Карточек: '+all.length+' · совпадений по запросам: '+total+' · использовано кредитов: '+credits+(errors.length?' · ошибок: '+errors.length:'');
+ if(!all.length){out.innerHTML='<div class="empty">'+(errors.length?errors.map(esc).join('<br>'):'Объявления не найдены. Попробуйте уточнить город или выбрать другое направление.')+'</div>';return}
+ out.innerHTML=all.map((x,i)=>'<article class="panel" style="margin:10px 0;padding:13px"><div class="row" style="align-items:flex-start;gap:12px">'+(x.image?'<img src="'+esc(x.image)+'" alt="" loading="lazy" style="width:92px;height:92px;object-fit:cover;border-radius:8px">':'')+'<div style="min-width:0;flex:1"><b>'+esc(x.title)+'</b><div class="muted" style="margin-top:5px">'+esc([x.seller,x.city,x.price].filter(Boolean).join(' · '))+'</div><p class="muted" style="margin:7px 0">'+esc((x.description||'').slice(0,220))+'</p><div class="row wrap"><a class="btn secondary" href="'+esc(x.url)+'" target="_blank" rel="noopener" style="text-decoration:none">Открыть объявление</a><button class="btn" onclick="addSearchResult('+i+')">Сохранить лид</button></div></div></div></article>').join('');
+ if(errors.length)out.innerHTML+='<div class="notice">Часть запросов завершилась ошибкой:<br>'+errors.map(esc).join('<br>')+'</div>';
 }
 function renderAnalytics(a){
 const pct=(n,d)=>d?Math.round(n*1000/d)/10:0;
