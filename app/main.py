@@ -96,43 +96,48 @@ def avito_request(path, method="GET", payload=None):
 
 
 @app.get("/api/search/avito")
-def search_public_avito(q: str, location: str = "rossiya", page: int = 1):
+def search_public_avito(q: str, location: str = "rossiya", category: str = "uslugi", page: int = 1):
+    """Search public Avito listings through API.SH and normalize its documented response."""
     api_key = os.getenv("APISH_API_KEY", "").strip()
     if not api_key:
-        raise HTTPException(503, "Не задан APISH_API_KEY в Render Environment. Создайте ключ API.SH и добавьте его в настройки сервиса.")
-    params = urlencode({"q": q[:160], "location": location[:80], "page": min(max(page, 1), 100)})
-    req = urllib.request.Request(
-        "https://api.api.sh/avito/v1/search?" + params,
-        headers={"x-api-key": api_key, "Accept": "application/json"},
-        method="GET",
-    )
+        raise HTTPException(503, "Не настроен ключ API.SH (APISH_API_KEY). Поиск временно недоступен.")
+    params = urlencode({"q": q[:160], "location": location[:80], "category": category[:120], "page": min(max(page, 1), 100)})
+    req = urllib.request.Request("https://api.api.sh/avito/v1/search?" + params, headers={"x-api-key": api_key, "Accept": "application/json"}, method="GET")
     try:
         with urllib.request.urlopen(req, timeout=120) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:500]
-        raise HTTPException(502, f"Сервис поиска Avito ({exc.code}): {detail}")
+        if exc.code == 404:
+            return {"total": 0, "page": page, "next_page": None, "credits_used": 0, "listings": []}
+        raise HTTPException(502, f"API.SH / Avito ({exc.code}): {detail}")
     except Exception as exc:
         raise HTTPException(502, "Не удалось выполнить поиск Avito: " + str(exc))
-    items = data.get("listings") or data.get("items") or []
+    if data.get("success") is False:
+        raise HTTPException(502, "API.SH: " + str(data.get("error") or "ошибка поиска"))
     results = []
-    for item in items:
+    for item in data.get("listings") or []:
         seller = item.get("seller") or {}
+        loc = item.get("location")
+        city = (loc.get("name") or loc.get("title") or loc.get("city") or "") if isinstance(loc, dict) else (loc or "")
+        city = city or item.get("city") or item.get("address") or item.get("region") or ""
+        images = item.get("images") or []
+        category_data = item.get("category") or {}
         results.append({
-            "id": item.get("id") or item.get("avito_id"),
-            "title": item.get("title") or "",
+            "id": item.get("id"), "title": item.get("title") or "",
             "url": item.get("url") or item.get("link") or "",
             "description": item.get("description") or "",
             "price": item.get("price_text") or (str(item.get("price")) + " ₽" if item.get("price") is not None else ""),
-            "city": item.get("city") or item.get("location") or "",
-            "seller": seller.get("name") or seller.get("type") or "",
-            "seller_url": seller.get("profile_url") or "",
-            "published": item.get("published") or "",
-            "image": (item.get("images") or [None])[0],
+            "city": city, "seller": seller.get("name") or seller.get("type") or "",
+            "seller_url": seller.get("profile_url") or "", "seller_type": seller.get("type") or "",
+            "seller_rating": seller.get("rating"), "published": item.get("published") or item.get("published_text") or "",
+            "image": images[0] if images else None,
+            "category": category_data.get("name", "") if isinstance(category_data, dict) else "",
         })
-    return {"total": data.get("total", len(results)), "page": data.get("page", page),
-            "next_page": data.get("next_page"), "credits_used": data.get("credits_used"),
-            "listings": results}
+    return {"total": data.get("total", len(results)), "count": data.get("count", len(results)),
+            "page": data.get("page", page), "next_page": data.get("next_page"),
+            "credits_used": data.get("credits_used", 0), "listings": results}
+
 
 @app.get("/api/avito/status")
 def avito_status():
